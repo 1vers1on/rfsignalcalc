@@ -5,6 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import numbers
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -47,13 +50,72 @@ class Project:
                    name=d.get("name", "Untitled"))
 
     def save(self, path: str) -> None:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(self.to_dict(), fh, indent=2)
+        """Serialize the project to JSON, writing atomically.
+
+        The project is fully serialized to a string *before* the destination is
+        touched, then written through a temporary file that atomically replaces
+        the target. A failure at any point — a serialization error or a write
+        error — therefore never truncates or corrupts an existing file: the old
+        contents survive intact and a half-written temp file is cleaned up.
+        """
+        text = json.dumps(self.to_dict(), indent=2, default=_json_default)
+
+        path = os.fspath(path)
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+
+        fd, tmp = tempfile.mkstemp(prefix=".rfc-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def load(cls, path: str) -> "Project":
         with open(path, "r", encoding="utf-8") as fh:
-            return cls.from_dict(json.load(fh))
+            text = fh.read()
+        if not text.strip():
+            raise ValueError("Project file is empty or corrupt.")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Not a valid project file: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Project file does not contain a project object.")
+        return cls.from_dict(data)
+
+
+def _json_default(o):
+    """Fallback JSON encoder for stray non-native values (e.g. NumPy scalars).
+
+    Keeps :meth:`Project.save` robust if a NumPy type or similar leaks into a
+    field, instead of failing the whole save with a bare ``TypeError`` (which,
+    before the save was made atomic, also wiped the target file).
+    """
+    if isinstance(o, numbers.Integral):
+        return int(o)
+    if isinstance(o, numbers.Real):
+        v = float(o)
+        if math.isinf(v):
+            return "inf" if v > 0 else "-inf"
+        return v
+    if isinstance(o, complex):
+        return [o.real, o.imag]
+    if hasattr(o, "tolist"):          # NumPy arrays and the like
+        return o.tolist()
+    if hasattr(o, "item"):            # 0-d / scalar NumPy values
+        return o.item()
+    if isinstance(o, (set, frozenset)):
+        return sorted(o)
+    raise TypeError(f"{type(o).__name__} is not JSON serializable")
 
 
 def _fmt(v: float) -> str:

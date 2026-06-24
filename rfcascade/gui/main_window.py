@@ -298,10 +298,26 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.recompute()
 
+    def _sync_network_gains(self):
+        """Re-pin every network-backed stage's scalar gain to the source freq.
+
+        Lumped-circuit and Touchstone stages carry a frequency-dependent
+        response; the scalar gain the cascade uses is a single-frequency sample
+        of it. Without this, that sample only refreshed when a stage was
+        re-opened in an editor, so changing the source frequency left the
+        cascade table / summary stale until each stage was double-clicked.
+        """
+        freq = self._design_freq()
+        changed = [r for r, comp in enumerate(self._project.components)
+                   if comp.sync_gain_to(freq)]
+        if changed:
+            self.chain_model.refresh_rows(changed)
+
     def recompute(self):
         src = self._project.source
         comps = self._project.components
         mode = self.source_panel.imd_mode()
+        self._sync_network_gains()
         result = analyze(src, comps, mode)
 
         self.results_model.set_result(result)

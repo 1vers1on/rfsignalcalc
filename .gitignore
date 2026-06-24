@@ -45,6 +45,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Application output (uncomment if you keep sample projects out of VCS)
-# *.rfc
-# *.csv
+*.rfc
+*.csv

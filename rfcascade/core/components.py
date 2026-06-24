@@ -189,10 +189,33 @@ class Component:
         self.circuit = None
         self.sparams_data = None
 
+    def sync_gain_to(self, freq_hz: Optional[float]) -> bool:
+        """Pin the scalar ``gain_db`` to the network's |S21| at ``freq_hz``.
+
+        Network-backed stages (lumped circuits or Touchstone data) have a
+        frequency-dependent response; the scalar gain the cascade engine uses is
+        only a single-frequency sample of it. Re-sampling here keeps the cascade
+        tracking the source frequency. Flat stages have no frequency shape and
+        are left unchanged.
+
+        Returns ``True`` only if ``gain_db`` actually changed.
+        """
+        if not freq_hz or not self.has_network:
+            return False
+        if self.circuit is not None:
+            new_gain = self.get_circuit().insertion_gain_db(freq_hz)
+        else:
+            from .sparams import insertion_loss_db_at
+            new_gain = insertion_loss_db_at(self.get_sparams(), freq_hz)
+        if new_gain != self.gain_db:
+            self.gain_db = new_gain
+            return True
+        return False
+
     # ---- (de)serialization ---------------------------------------------------
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["kind"] = self.kind.value
+        d["kind"] = self.kind.value if isinstance(self.kind, ComponentKind) else str(self.kind)
         # JSON cannot represent inf; encode as a sentinel string.
         for k in ("oip3_dbm", "oip2_dbm", "op1db_dbm", "gain_db", "nf_db"):
             v = d.get(k)

@@ -217,6 +217,19 @@ class ChainModel(QAbstractTableModel):
             self.dataChanged.emit(left, right)
             self.chainChanged.emit()
 
+    def refresh_rows(self, rows: List[int]) -> None:
+        """Repaint the given rows without signalling a chain change.
+
+        Used for derived updates made *during* recompute (e.g. a network
+        stage's gain re-sampled at the source frequency); emitting
+        ``chainChanged`` here would recurse back into recompute.
+        """
+        for r in rows:
+            if 0 <= r < len(self._items):
+                left = self.index(r, 0)
+                right = self.index(r, self.columnCount() - 1)
+                self.dataChanged.emit(left, right)
+
 
 class KindDelegate(QStyledItemDelegate):
     """Combo-box editor for the component Type column."""
