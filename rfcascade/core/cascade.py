@@ -219,6 +219,27 @@ def analyze(
     return result
 
 
+def frequency_response(
+    source: SignalSource,
+    components: List[Component],
+    freqs,
+):
+    """Cascade every enabled stage's two-port over a frequency grid.
+
+    Returns an :class:`~rfcascade.core.sparams.SParams` for the whole chain.
+    Stages with a lumped circuit or measured Touchstone data contribute their
+    real frequency shape; ordinary gain/loss stages contribute a flat, matched
+    block. The reference impedance is taken from the first stage that defines
+    one (default 50 Ω).
+    """
+    from . import sparams as _sp
+
+    enabled = [c for c in components if c.enabled]
+    z0 = next((c.z0_ohm for c in enabled if c.has_network), 50.0)
+    nets = [c.network(freqs) for c in enabled]
+    return _sp.cascade_all(nets, freqs, z0)
+
+
 def _finalize_summary(
     result: CascadeResult,
     source: SignalSource,

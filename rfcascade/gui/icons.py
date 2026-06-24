@@ -100,6 +100,31 @@ def _icon(name: str, color: str) -> QIcon:
     elif name == "run":
         poly = QPolygonF([QPointF(14, 10), QPointF(31, 20), QPointF(14, 30)])
         p.setBrush(c); p.drawPolygon(poly)
+    elif name == "circuit":
+        # a little series/shunt ladder schematic
+        p.drawLine(7, 14, 14, 14)
+        p.drawRoundedRect(QRectF(14, 11, 9, 6), 1.5, 1.5)
+        p.drawLine(23, 14, 33, 14)
+        p.drawLine(28, 14, 28, 21)        # shunt branch
+        p.drawLine(23, 21, 33, 21)        # cap plate
+        p.drawLine(25, 24, 31, 24)        # cap plate
+        p.drawLine(26, 28, 30, 28)        # ground
+    elif name == "freq":
+        # a filter response curve (band-pass hump)
+        path = QPainterPath()
+        path.moveTo(8, 29)
+        path.lineTo(16, 29)
+        path.cubicTo(20, 29, 20, 12, 24, 12)
+        path.cubicTo(28, 12, 28, 29, 32, 29)
+        p.drawPath(path)
+        p.drawLine(7, 31, 33, 31)
+    elif name == "import":
+        p.drawLine(20, 8, 20, 22)
+        poly = QPolygonF([QPointF(14, 15), QPointF(20, 23), QPointF(26, 15)])
+        p.drawPolyline(poly)
+        path = QPainterPath()
+        path.moveTo(11, 24); path.lineTo(11, 32); path.lineTo(29, 32); path.lineTo(29, 24)
+        p.drawPath(path)
 
     p.end()
     return QIcon(pm.scaled(int(_S * 0.7), int(_S * 0.7), Qt.KeepAspectRatio, Qt.SmoothTransformation))

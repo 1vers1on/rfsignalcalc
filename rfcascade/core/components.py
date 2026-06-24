@@ -86,6 +86,16 @@ class Component:
     tol_nf_db: float = 0.0
     tol_oip3_db: float = 0.0
 
+    # ---- frequency-domain (S-parameter) model --------------------------------
+    # A stage optionally carries a two-port S-parameter description used by the
+    # frequency-response analysis. It is either synthesised from a lumped
+    # ladder (`circuit`, a serialised LumpedCircuit) or sampled from a measured
+    # Touchstone file (`sparams_data`, a serialised SParams). When neither is
+    # present the stage behaves as an ideal, matched, flat gain/loss block.
+    z0_ohm: float = 50.0
+    circuit: Optional[dict] = None
+    sparams_data: Optional[dict] = None
+
     uid: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     # ---- derived (input-referred) values -------------------------------------
@@ -114,6 +124,70 @@ class Component:
         if self.nf_db is None:
             return max(0.0, -self.gain_db)
         return self.nf_db
+
+    # ---- frequency-domain network --------------------------------------------
+    @property
+    def has_network(self) -> bool:
+        """True if this stage carries an explicit S-parameter description."""
+        return self.circuit is not None or self.sparams_data is not None
+
+    @property
+    def network_kind(self) -> str:
+        if self.circuit is not None:
+            return "lumped"
+        if self.sparams_data is not None:
+            return "touchstone"
+        return "flat"
+
+    def get_circuit(self):
+        """Return the lumped :class:`LumpedCircuit` for this stage, or None."""
+        if self.circuit is None:
+            return None
+        from .circuit import LumpedCircuit
+        return LumpedCircuit.from_dict(self.circuit)
+
+    def get_sparams(self):
+        """Return the stored sampled :class:`SParams`, or None."""
+        if self.sparams_data is None:
+            return None
+        from .sparams import SParams
+        return SParams.from_dict(self.sparams_data)
+
+    def network(self, freqs):
+        """Two-port :class:`SParams` of this stage on the ``freqs`` grid.
+
+        Lumped circuits are synthesised exactly at every frequency; sampled
+        (Touchstone) data is interpolated; everything else is modelled as an
+        ideal, matched flat block at the stage's scalar gain.
+        """
+        from . import sparams as _sp
+        if self.circuit is not None:
+            return self.get_circuit().sparams(freqs)
+        if self.sparams_data is not None:
+            return self.get_sparams().interpolated(freqs)
+        return _sp.flat_gain(freqs, self.gain_db, self.z0_ohm,
+                             reciprocal=self.kind.is_passive)
+
+    def set_circuit(self, circ, sync_gain_at_hz: Optional[float] = None) -> None:
+        """Attach a lumped circuit; optionally sync scalar gain to its |S21|."""
+        self.circuit = circ.to_dict()
+        self.sparams_data = None
+        self.z0_ohm = circ.z0
+        if sync_gain_at_hz:
+            self.gain_db = circ.insertion_gain_db(sync_gain_at_hz)
+
+    def set_sparams(self, net, sync_gain_at_hz: Optional[float] = None) -> None:
+        """Attach measured/sampled S-parameters (e.g. from Touchstone)."""
+        self.sparams_data = net.to_dict()
+        self.circuit = None
+        self.z0_ohm = net.z0
+        if sync_gain_at_hz:
+            from .sparams import insertion_loss_db_at
+            self.gain_db = insertion_loss_db_at(net, sync_gain_at_hz)
+
+    def clear_network(self) -> None:
+        self.circuit = None
+        self.sparams_data = None
 
     # ---- (de)serialization ---------------------------------------------------
     def to_dict(self) -> dict:

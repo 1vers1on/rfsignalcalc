@@ -14,8 +14,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.components import Component, ComponentKind, SignalSource
-from ..core.cascade import IMDMode, analyze
+from ..core.cascade import IMDMode, analyze, frequency_response
 from ..core import library, project as project_mod
+from ..core import touchstone as touchstone_mod
 from . import theme, icons
 from .chain_model import ChainModel, KindDelegate
 from .results_model import ResultsModel
@@ -23,7 +24,8 @@ from .source_panel import SourcePanel
 from .summary_panel import SummaryPanel
 from .library_panel import LibraryPanel
 from .component_editor import ComponentEditor
-from .plots import LevelDiagram, MetricsView, SweepView, MonteCarloView
+from .circuit_builder import CircuitBuilderDialog
+from .plots import LevelDiagram, MetricsView, SweepView, MonteCarloView, FreqResponseView
 from .fmt import num
 
 APP_NAME = "RF Cascade Studio"
@@ -118,12 +120,14 @@ class MainWindow(QMainWindow):
 
         self.level_view = LevelDiagram()
         self.metrics_view = MetricsView()
+        self.freq_view = FreqResponseView()
         self.sweep_view = SweepView()
         self.mc_view = MonteCarloView()
 
         self.tabs.addTab(self.results_view, "Cascade Table")
         self.tabs.addTab(self.level_view, "Level Diagram")
         self.tabs.addTab(self.metrics_view, "Metrics")
+        self.tabs.addTab(self.freq_view, "Frequency Response")
         self.tabs.addTab(self.sweep_view, "Power Sweep")
         self.tabs.addTab(self.mc_view, "Monte Carlo")
 
@@ -193,6 +197,14 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
         tb.addSeparator()
 
+        self.a_block = self._act("circuit", "Build Block", self.build_block,
+                                 tip="Build a two-port from lumped L/C/R components")
+        self.a_import_snp = self._act("import", "Import .s2p", self.import_touchstone,
+                                      tip="Add a stage from a Touchstone S-parameter file")
+        tb.addAction(self.a_block)
+        tb.addAction(self.a_import_snp)
+        tb.addSeparator()
+
         self.a_sweep = self._act("sweep", "Power Sweep", self.run_sweep)
         self.a_mc = self._act("montecarlo", "Monte Carlo", self.run_montecarlo)
         tb.addAction(self.a_sweep)
@@ -200,7 +212,10 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         self.a_export = self._act("export", "Export CSV", self.export_csv)
+        self.a_export_snp = self._act("freq", "Export .s2p", self.export_touchstone,
+                                      tip="Export the cascaded chain response as a Touchstone file")
         tb.addAction(self.a_export)
+        tb.addAction(self.a_export_snp)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -229,6 +244,15 @@ class MainWindow(QMainWindow):
 
         em = m.addMenu("&Edit")
         em.addActions([self.a_add, self.a_edit, self.a_dup, self.a_del, self.a_up, self.a_down])
+
+        cm = m.addMenu("&Circuit")
+        self.a_edit_ckt = QAction("Edit Lumped Circuit…", self)
+        self.a_edit_ckt.triggered.connect(self.edit_circuit)
+        cm.addAction(self.a_block)
+        cm.addAction(self.a_edit_ckt)
+        cm.addSeparator()
+        cm.addAction(self.a_import_snp)
+        cm.addAction(self.a_export_snp)
 
         am = m.addMenu("&Analysis")
         am.addActions([self.a_sweep, self.a_mc])
@@ -284,6 +308,7 @@ class MainWindow(QMainWindow):
         self.summary_panel.update_summary(result.summary)
         self.level_view.update_result(result)
         self.metrics_view.update_result(result)
+        self.freq_view.set_inputs(src, comps)
         self.sweep_view.set_inputs(src, comps, mode)
         self.mc_view.set_inputs(src, comps, mode)
 
@@ -310,8 +335,13 @@ class MainWindow(QMainWindow):
 
     def _maybe_edit_on_double(self, index):
         # Double-clicking the name column opens the full editor; other columns edit inline.
+        # For a lumped block the name opens the circuit builder instead.
         if index.column() in (1,):
-            self.edit_stage()
+            comp = self.chain_model.component_at(index.row())
+            if comp is not None and comp.network_kind == "lumped":
+                self.edit_circuit()
+            else:
+                self.edit_stage()
 
     def edit_stage(self):
         row = self._current_row()
@@ -347,6 +377,9 @@ class MainWindow(QMainWindow):
     def _chain_context_menu(self, pos):
         menu = QMenu(self)
         menu.addActions([self.a_edit, self.a_dup, self.a_del])
+        comp = self.chain_model.component_at(self._current_row())
+        if comp is not None and comp.network_kind == "lumped":
+            menu.addAction(self.a_edit_ckt)
         menu.addSeparator()
         menu.addActions([self.a_up, self.a_down])
         menu.addSeparator()
@@ -369,6 +402,87 @@ class MainWindow(QMainWindow):
                 "Open a stage (Edit) and set Gain/NF/OIP3 σ values, then run again.")
             return
         self.mc_view.run()
+
+    # --------------------------------------------------------- circuit / S-params
+    def _design_freq(self) -> float:
+        return self._project.source.frequency_hz or 1.0e9
+
+    def build_block(self):
+        dlg = CircuitBuilderDialog(None, default_freq_hz=self._design_freq(), parent=self)
+        if not dlg.exec():
+            return
+        circ = dlg.result_circuit()
+        comp = Component(name=circ.name, kind=ComponentKind.FILTER, nf_db=None)
+        comp.set_circuit(circ, sync_gain_at_hz=self._design_freq())
+        comp.frequency_hz = self._design_freq()
+        self._add_component(comp)
+        self.tabs.setCurrentWidget(self.freq_view)
+
+    def edit_circuit(self):
+        row = self._current_row()
+        comp = self.chain_model.component_at(row)
+        if comp is None:
+            return
+        circ = comp.get_circuit()
+        if circ is None:
+            QMessageBox.information(
+                self, "Edit Lumped Circuit",
+                "This stage is not built from lumped components.\n\n"
+                "Use “Build Block” to create one, or this only applies to "
+                "lumped-circuit stages.")
+            return
+        dlg = CircuitBuilderDialog(circ, default_freq_hz=self._design_freq(), parent=self)
+        if not dlg.exec():
+            return
+        new_circ = dlg.result_circuit()
+        comp.set_circuit(new_circ, sync_gain_at_hz=self._design_freq())
+        comp.name = new_circ.name
+        self.chain_model.update_component(row)
+        self._select_row(row)
+
+    def import_touchstone(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Touchstone", "",
+            "Touchstone (*.s1p *.s2p *.snp);;All files (*)")
+        if not path:
+            return
+        try:
+            net = touchstone_mod.read_touchstone(path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        name = os.path.splitext(os.path.basename(path))[0]
+        peak_db = float(net.s21_db().max())
+        kind = ComponentKind.AMPLIFIER if peak_db > 0.5 else ComponentKind.FILTER
+        comp = Component(name=name, kind=kind, nf_db=None)
+        comp.set_sparams(net, sync_gain_at_hz=self._design_freq())
+        self._add_component(comp)
+        self.tabs.setCurrentWidget(self.freq_view)
+        self.statusBar().showMessage(
+            f"Imported {os.path.basename(path)} — {net.n} points, "
+            f"{num(peak_db, 1)} dB peak |S21|", 5000)
+
+    def export_touchstone(self):
+        freqs = self.freq_view._freqs()
+        if freqs.size == 0:
+            QMessageBox.information(
+                self, "Export Touchstone",
+                "Open the Frequency Response tab and set a valid frequency span "
+                "first; the chain is exported over that range.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Cascaded S-parameters",
+            (self._project.name or "chain") + ".s2p",
+            "Touchstone 2-port (*.s2p);;All files (*)")
+        if not path:
+            return
+        net = frequency_response(self._project.source, self._project.components, freqs)
+        try:
+            touchstone_mod.write_touchstone(path, net, fmt="DB")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Exported {os.path.basename(path)}", 4000)
 
     # ----------------------------------------------------------------- files
     def new_project(self):
@@ -474,7 +588,9 @@ class MainWindow(QMainWindow):
             self.a_new: "new", self.a_open: "open", self.a_save: "save",
             self.a_add: "add", self.a_edit: "edit", self.a_dup: "duplicate",
             self.a_del: "delete", self.a_up: "up", self.a_down: "down",
-            self.a_sweep: "sweep", self.a_mc: "montecarlo", self.a_export: "export",
+            self.a_block: "circuit", self.a_import_snp: "import",
+            self.a_sweep: "sweep", self.a_mc: "montecarlo",
+            self.a_export: "export", self.a_export_snp: "freq",
             self.a_lib: "library", self.a_theme: "theme",
         }
         for act, name in mapping.items():

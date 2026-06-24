@@ -20,7 +20,17 @@ levels.
   shows spurious-free dynamic range graphically
 - **Monte-Carlo tolerance analysis**: perturb per-part gain / NF / OIP3 by their
   1-sigma tolerances and view the resulting distributions of system metrics
-- **Built-in parts library** of representative RF components to build from
+- **S-parameter / frequency-response simulation**: cascade the full complex
+  two-port of every stage and plot the chain's |S21|, |S11|, |S22|, VSWR,
+  group delay and phase versus frequency — see filter shapes, passband ripple,
+  −3 dB bandwidth and return loss
+- **Lumped-component circuit-block builder**: assemble a two-port from series /
+  shunt R-L-C ladder rungs with a live S21 / S11 preview, then drop it into the
+  chain as a stage. One-click Butterworth LPF / HPF / BPF and π-pad presets
+- **Touchstone import / export**: pull a measured part in from a `.s1p` / `.s2p`
+  file, or write the cascaded chain response back out as Touchstone
+- **Built-in parts library** of representative RF components (including ready-made
+  lumped filter blocks) to build from
 - **Save / load** projects as JSON (`.rfc`) and **export** results to CSV
 - Qt-based GUI with live plots
 
@@ -58,25 +68,31 @@ python main.py project.rfc
 ```
 rfcascade/
   core/        # analysis engine (no GUI dependencies)
-    cascade.py     # the cascade analysis engine
+    cascade.py     # the cascade analysis engine + frequency_response()
     components.py  # Component / SignalSource data models
-    library.py     # built-in parts library
+    sparams.py     # 2-port S-parameters: S<->ABCD, cascading, VSWR, group delay
+    circuit.py     # lumped R/L/C ladder -> S-parameters, filter synthesis
+    touchstone.py  # .s1p / .s2p Touchstone read & write
+    library.py     # built-in parts library (incl. lumped filter blocks)
     project.py     # save/load (JSON) and CSV export
     sweep.py       # two-tone input-power sweep
     montecarlo.py  # tolerance analysis
     units.py       # dB / dBm / linear / noise-temperature helpers
   gui/         # PySide6 + pyqtgraph user interface
+    circuit_builder.py  # lumped circuit-block builder dialog
 tests/
-  test_cascade.py  # engine unit tests
+  test_cascade.py  # cascade engine unit tests
+  test_sparams.py  # S-parameter / lumped-circuit / Touchstone tests
 main.py        # entry point
 ```
 
 ## Tests
 
-The cascade engine is covered by a standalone test script:
+The engine is covered by standalone test scripts (no pytest required):
 
 ```bash
 python tests/test_cascade.py
+python tests/test_sparams.py
 ```
 
 ## Notes on conventions
@@ -88,3 +104,8 @@ python tests/test_cascade.py
   the cascade.
 - Passive lossy stages (filters, cables, attenuators) take their noise figure
   equal to their insertion loss.
+- The frequency-response view is independent of the scalar cascade: stages with
+  a lumped circuit or imported Touchstone data contribute their real two-port
+  shape, while plain gain/loss stages are modelled as ideal, matched flat blocks.
+  Two-ports are cascaded through their ABCD (chain) matrices at a common
+  reference impedance (default 50 Ω). NF / IP3 remain single-frequency.

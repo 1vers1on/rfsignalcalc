@@ -11,14 +11,16 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-    QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from ..core.cascade import CascadeResult
+from ..core.cascade import CascadeResult, frequency_response
 from ..core.components import SignalSource, Component
 from ..core import sweep as sweep_mod
 from ..core import montecarlo as mc_mod
+from ..core import sparams as sparams_mod
+from ..core import units
 from ..core.cascade import IMDMode
 from . import theme
 
@@ -354,3 +356,173 @@ class MonteCarloView(QWidget):
             f"({self._result.trials} trials)"
         )
         self.plot.enableAutoRange()
+
+
+# ---------------------------------------------------------------------------
+class FreqResponseView(QWidget):
+    """Cascaded S-parameter frequency response: |S21| / |S11| / |S22|, VSWR,
+    group delay and phase of the whole chain over a swept frequency band."""
+
+    MODES = ["Magnitude (dB)", "VSWR", "Group delay (ns)", "S21 phase (deg)"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source: Optional[SignalSource] = None
+        self._components: List[Component] = []
+        self._range_user_set = False
+        self._net: Optional[sparams_mod.SParams] = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(2, 2, 2, 2)
+
+        ctl = QHBoxLayout()
+        ctl.addWidget(QLabel("From"))
+        self.fstart = QLineEdit("0.1 GHz")
+        self.fstart.setMaximumWidth(96)
+        ctl.addWidget(self.fstart)
+        ctl.addWidget(QLabel("to"))
+        self.fstop = QLineEdit("3 GHz")
+        self.fstop.setMaximumWidth(96)
+        ctl.addWidget(self.fstop)
+        ctl.addWidget(QLabel("Points"))
+        self.points = QSpinBox()
+        self.points.setRange(51, 8001)
+        self.points.setValue(601)
+        self.points.setSingleStep(50)
+        ctl.addWidget(self.points)
+
+        ctl.addSpacing(10)
+        self.mode = QComboBox()
+        self.mode.addItems(self.MODES)
+        ctl.addWidget(self.mode)
+
+        self.cb_s21 = QCheckBox("S21"); self.cb_s21.setChecked(True)
+        self.cb_s11 = QCheckBox("S11"); self.cb_s11.setChecked(True)
+        self.cb_s22 = QCheckBox("S22")
+        for cb in (self.cb_s21, self.cb_s11, self.cb_s22):
+            ctl.addWidget(cb)
+
+        self.auto_btn = QPushButton("Auto span")
+        self.auto_btn.clicked.connect(self._auto_range)
+        ctl.addWidget(self.auto_btn)
+        ctl.addStretch(1)
+        root.addLayout(ctl)
+
+        self.readout = QLabel("")
+        self.readout.setObjectName("SubHeading")
+        root.addWidget(self.readout)
+
+        self.plot = pg.PlotWidget()
+        self.legend = self.plot.addLegend(offset=(-10, 10),
+                                          labelTextColor=theme.current_palette().text)
+        _style_plot(self.plot.getPlotItem(), "Frequency (Hz)", "dB",
+                    "Cascaded Frequency Response")
+        root.addWidget(self.plot)
+
+        for w in (self.fstart, self.fstop):
+            w.editingFinished.connect(self._on_range_edited)
+        self.points.valueChanged.connect(self.refresh)
+        self.mode.currentIndexChanged.connect(self.refresh)
+        for cb in (self.cb_s21, self.cb_s11, self.cb_s22):
+            cb.toggled.connect(self.refresh)
+
+    # ---- inputs --------------------------------------------------------------
+    def set_inputs(self, source: SignalSource, components: List[Component], imd=None):
+        first = self._source is None
+        self._source, self._components = source, components
+        if (first or not self._range_user_set) and source is not None:
+            self._auto_range(silent=True)
+        self.refresh()
+
+    def _on_range_edited(self):
+        self._range_user_set = True
+        self.refresh()
+
+    def _auto_range(self, silent: bool = False):
+        """Pick a sensible band centred on the source / stage frequencies."""
+        fset = []
+        if self._source is not None and self._source.frequency_hz:
+            fset.append(self._source.frequency_hz)
+        for c in self._components:
+            if c.enabled and c.frequency_hz:
+                fset.append(c.frequency_hz)
+        if not fset:
+            fset = [1e9]
+        lo, hi = min(fset), max(fset)
+        start = max(lo * 0.2, 1e3)
+        stop = hi * 3.0 if hi == lo else hi * 1.6
+        self.fstart.setText(units.format_eng(start, "Hz", 3))
+        self.fstop.setText(units.format_eng(stop, "Hz", 3))
+        self._range_user_set = False
+        if not silent:
+            self.refresh()
+
+    def _freqs(self) -> np.ndarray:
+        try:
+            f0 = units.parse_frequency(self.fstart.text())
+            f1 = units.parse_frequency(self.fstop.text())
+        except ValueError:
+            return np.array([])
+        if f1 <= f0 or f0 <= 0:
+            return np.array([])
+        return np.linspace(f0, f1, self.points.value())
+
+    # ---- draw ----------------------------------------------------------------
+    def refresh(self):
+        if self._source is None:
+            return
+        pal = theme.current_palette()
+        self.plot.clear()
+        self.legend.clear()
+
+        freqs = self._freqs()
+        active = [c for c in self._components if c.enabled]
+        if freqs.size == 0 or not active:
+            self.readout.setText("Add stages and set a valid frequency span.")
+            return
+
+        net = frequency_response(self._source, self._components, freqs)
+        self._net = net
+        mode = self.mode.currentText()
+
+        if mode == self.MODES[0]:       # magnitude dB
+            self.plot.getPlotItem().setLabel("left", "Magnitude (dB)", color=pal.dim_text)
+            if self.cb_s21.isChecked():
+                self.plot.plot(freqs, net.s21_db(), pen=_pen(pal.accent, 2.4), name="S21")
+            if self.cb_s11.isChecked():
+                self.plot.plot(freqs, net.s11_db(), pen=_pen(pal.warn, 1.8, [6, 5]), name="S11")
+            if self.cb_s22.isChecked():
+                self.plot.plot(freqs, net.s22_db(), pen=_pen(pal.accent_2, 1.8, [3, 4]), name="S22")
+        elif mode == self.MODES[1]:     # VSWR
+            self.plot.getPlotItem().setLabel("left", "VSWR", color=pal.dim_text)
+            self.plot.plot(freqs, net.vswr_in(), pen=_pen(pal.accent, 2.2), name="VSWR in")
+            self.plot.plot(freqs, net.vswr_out(), pen=_pen(pal.accent_2, 1.8, [4, 4]), name="VSWR out")
+        elif mode == self.MODES[2]:     # group delay
+            self.plot.getPlotItem().setLabel("left", "Group delay (ns)", color=pal.dim_text)
+            self.plot.plot(freqs, net.group_delay() * 1e9, pen=_pen(pal.accent, 2.2), name="S21 GD")
+        else:                            # phase
+            self.plot.getPlotItem().setLabel("left", "Phase (deg)", color=pal.dim_text)
+            self.plot.plot(freqs, net.s21_phase_deg(), pen=_pen(pal.accent, 2.2), name="S21 phase")
+
+        # marker at the source design frequency
+        if self._source.frequency_hz and freqs[0] <= self._source.frequency_hz <= freqs[-1]:
+            self.plot.addItem(pg.InfiniteLine(
+                pos=self._source.frequency_hz, angle=90,
+                pen=_pen(pal.dim_text, 1.2, [2, 4]),
+                label="f0", labelOpts={"color": pal.dim_text, "position": 0.04}))
+
+        self._update_readout(net)
+        self.plot.enableAutoRange()
+
+    def _update_readout(self, net: sparams_mod.SParams):
+        il = sparams_mod.insertion_loss_db_at(net, self._source.frequency_hz) \
+            if self._source.frequency_hz else net.s21_db().max()
+        f_lo, f_hi, bw = sparams_mod.passband_edges_db(net, drop_db=3.0)
+        rl_in = -float(np.max(net.s11_db()))
+        bw_txt = f"−3 dB BW {units.format_eng(bw, 'Hz', 3)}" if bw == bw else "−3 dB BW —"
+        edge_txt = (f"[{units.format_eng(f_lo, 'Hz', 3)} … {units.format_eng(f_hi, 'Hz', 3)}]"
+                    if f_lo == f_lo else "")
+        self.readout.setText(
+            f"S21 @ f0: {il:+.2f} dB    ·    {bw_txt} {edge_txt}    ·    "
+            f"worst input return loss {rl_in:.1f} dB    ·    Z0 {net.z0:g} Ω"
+        )

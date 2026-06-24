@@ -10,6 +10,7 @@ import math
 from typing import Dict, List
 
 from .components import Component, ComponentKind
+from . import circuit as ckt
 
 
 def _c(name, kind, gain, nf, oip3, p1db, **kw) -> Component:
@@ -17,6 +18,14 @@ def _c(name, kind, gain, nf, oip3, p1db, **kw) -> Component:
         name=name, kind=kind, gain_db=gain, nf_db=nf,
         oip3_dbm=oip3, op1db_dbm=p1db, **kw,
     )
+
+
+def _lumped(name: str, circ: ckt.LumpedCircuit, design_hz: float) -> Component:
+    """A passive FILTER stage backed by a synthesised lumped circuit."""
+    comp = Component(name=name, kind=ComponentKind.FILTER, nf_db=None)
+    comp.set_circuit(circ, sync_gain_at_hz=design_hz)
+    comp.frequency_hz = design_hz
+    return comp
 
 
 LIBRARY: Dict[str, List[Component]] = {
@@ -58,6 +67,13 @@ LIBRARY: Dict[str, List[Component]] = {
     "Data Converters": [
         _c("ADC 14-bit", ComponentKind.ADC, 0.0, 25.0, 40.0, 10.0),
         _c("ADC 16-bit", ComponentKind.ADC, 0.0, 22.0, 45.0, 8.0),
+    ],
+    "Lumped Filter Blocks": [
+        _lumped("LC LPF · 1 GHz (n5)", ckt.butterworth_lpf(5, 1.0e9), 1.0e8),
+        _lumped("LC HPF · 1 GHz (n5)", ckt.butterworth_hpf(5, 1.0e9), 3.0e9),
+        _lumped("LC BPF · 2.4 GHz (n3)", ckt.butterworth_bpf(3, 2.4e9, 2.0e8), 2.4e9),
+        _lumped("LC BPF · 100 MHz (n5)", ckt.butterworth_bpf(5, 1.0e8, 1.0e7), 1.0e8),
+        _lumped("π-pad · 10 dB", ckt.pi_pad(10.0), 1.0e9),
     ],
 }
 

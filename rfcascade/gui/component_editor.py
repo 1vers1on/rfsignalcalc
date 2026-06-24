@@ -54,6 +54,13 @@ class ComponentEditor(QDialog):
         f1.addRow("Type", self.kind)
         f1.addRow("Frequency", self.freq)
         f1.addRow("", self.enabled)
+        if comp.has_network:
+            src = "lumped circuit" if comp.network_kind == "lumped" else "Touchstone data"
+            note = QLabel(f"⚡ Frequency response driven by this stage's {src}; "
+                          "the gain below is its value at the design frequency.")
+            note.setObjectName("SubHeading")
+            note.setWordWrap(True)
+            f1.addRow("", note)
         root.addWidget(ident)
 
         # --- electrical -------------------------------------------------------

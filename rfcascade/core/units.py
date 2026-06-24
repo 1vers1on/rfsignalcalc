@@ -108,3 +108,31 @@ def parse_frequency(text: str) -> float:
         mult = suffixes[text[-1]]
         text = text[:-1].strip()
     return float(text) * mult
+
+
+#: Case-sensitive SI prefixes for component values (note: 'm' = milli, 'M' = mega).
+_SI_PREFIX = {
+    "f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "m": 1e-3,
+    "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12,
+}
+
+
+def parse_eng(text: str) -> float:
+    """Parse an engineering-notation value like '2.2p', '10nH', '4.7k', '50Ω'.
+
+    Understands SI prefixes (case-sensitive: ``m`` = milli, ``M`` / ``meg`` =
+    mega) and tolerates trailing unit letters (H, F, s, Ω, ohm).
+    """
+    t = text.strip().replace("Ω", "").replace("ohm", "").replace("Ohm", "").strip()
+    if not t:
+        raise ValueError("empty value")
+    if t.lower().endswith("meg"):
+        return float(t[:-3]) * 1e6
+    # drop a trailing unit letter that is not itself an SI prefix
+    if t[-1] in ("H", "F", "s"):
+        t = t[:-1].strip()
+    mult = 1.0
+    if t and t[-1] in _SI_PREFIX:
+        mult = _SI_PREFIX[t[-1]]
+        t = t[:-1].strip()
+    return float(t) * mult
